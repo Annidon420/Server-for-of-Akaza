@@ -52,6 +52,14 @@ app.use(express.json({ limit: "100kb" }));
    BASIC TEST
 ========================================================= */
 
+app.get("/", (req, res) => {
+  res.json({
+    success: true,
+    service: "stark-api",
+    message: "STARK Private Browser API is running",
+  });
+});
+
 app.get("/api/test", (req, res) => {
   res.setHeader("Cache-Control", "no-store");
 
