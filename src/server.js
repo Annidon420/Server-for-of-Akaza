@@ -735,6 +735,66 @@ function rewriteHtml(html, finalUrl, requestOrigin) {
   return $.html();
 }
 
+async function searchFallback(query) {
+  const response = await fetch(
+    `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+    {
+      headers: {
+        Accept: "text/html",
+        "User-Agent": "Mozilla/5.0 (compatible; STARK-Private-Browser/1.0)",
+      },
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Fallback search returned ${response.status}`);
+  }
+
+  const $ = cheerio.load(await response.text());
+
+  function getDestinationUrl(rawUrl) {
+    if (!rawUrl.trim()) {
+      return "";
+    }
+
+    try {
+      const parsed = new URL(
+        rawUrl,
+        "https://html.duckduckgo.com"
+      );
+      const destination = parsed.searchParams.get("uddg");
+
+      if (destination) {
+        const destinationUrl = new URL(destination);
+
+        if (["http:", "https:"].includes(destinationUrl.protocol)) {
+          return destinationUrl.toString();
+        }
+      }
+
+      return parsed.toString();
+    } catch {
+      return "";
+    }
+  }
+
+  return $(".result")
+    .map((_, element) => {
+      const link = $(element).find(".result__a").first();
+      const url = getDestinationUrl(link.attr("href") || "");
+
+      return {
+        title: link.text().trim(),
+        url,
+        content: $(element).find(".result__snippet").text().trim(),
+        thumbnail: null,
+        engine: "duckduckgo",
+      };
+    })
+    .get()
+    .filter((result) => result.title && result.url);
+}
+
 /* =========================================================
    SEARCH
 ========================================================= */
@@ -817,7 +877,7 @@ app.get("/api/search", async (req, res) => {
     const data =
       await response.json();
 
-    const results = (
+    let results = (
       data.results || []
     ).map((result) => ({
       title:
@@ -838,6 +898,10 @@ app.get("/api/search", async (req, res) => {
         result.engine || "",
     }));
 
+    if (results.length === 0 && mode === "web") {
+      results = await searchFallback(query);
+    }
+
     res.setHeader(
       "Cache-Control",
       "no-store, no-cache, must-revalidate, private"
@@ -851,6 +915,19 @@ app.get("/api/search", async (req, res) => {
     });
   } catch {
     // Intentionally do NOT log the search query.
+
+    if (mode === "web") {
+      try {
+        const fallbackResults = await searchFallback(query);
+
+        return res.json({
+          success: true,
+          query,
+          mode,
+          results: fallbackResults,
+        });
+      } catch {}
+    }
 
     res.status(500).json({
       success: false,
@@ -1077,7 +1154,7 @@ app.listen(
       });
 
       const stopTelegramBot = () => {
-        telegramBot.stop();
+        void telegramBot.stop();
       };
 
       process.once("SIGINT", stopTelegramBot);
